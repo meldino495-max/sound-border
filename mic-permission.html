@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <title>允许麦克风</title>
+    <link rel="stylesheet" href="mic-permission.css" />
+  </head>
+  <body>
+    <header class="header">
+      <h1>允许麦克风</h1>
+      <p class="subtitle">只用来判断有没有声音，不录音、不上传</p>
+    </header>
+    <main>
+      <p id="status">点下面的按钮后，在浏览器提示里选择允许。</p>
+      <button id="allow" type="button">允许麦克风</button>
+      <button id="settings" type="button" hidden>打开麦克风设置</button>
+    </main>
+    <script src="mic-permission.js"></script>
+  </body>
+</html>

@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <title>声浪边框</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <header class="header">
+      <h1>声浪边框</h1>
+      <p class="subtitle">按网站记住开关，下次打开自动恢复</p>
+      <p id="site-name" class="subtitle">正在识别当前网站…</p>
+    </header>
+
+    <section class="panel">
+      <label class="row">
+        <span>
+          <strong>输出识别</strong>
+          <small>只记住当前网站</small>
+        </span>
+        <input id="output-toggle" type="checkbox" role="switch" />
+      </label>
+      <p class="hint">
+        打开后记住这个网站。下次再打开它，出声时光边会自动出现，声音停止后消失。
+      </p>
+    </section>
+
+    <section class="panel">
+      <label class="row">
+        <span>
+          <strong>输入识别</strong>
+          <small>只记住当前网站，默认关闭</small>
+        </span>
+        <input id="input-toggle" type="checkbox" role="switch" />
+      </label>
+      <p class="hint">
+        打开后记住这个网站。下次再打开它会自动监听麦克风。没有输入时，普通网页和本地插件页面都会一直红边抖动，并弹出浏览器通知。
+      </p>
+      <button id="stop-input" class="stop-input" type="button">停止本次输入识别</button>
+      <p class="hint">只取消现在的红边和监听，不会忘掉这个网站。下次再打开它，输入识别会自动打开。</p>
+
+      <div id="input-options" class="options">
+        <label class="field">
+          灵敏度
+          <select id="sensitivity">
+            <option value="high">高 · 很轻的声音也算有输入</option>
+            <option value="medium">中 · 普通说话</option>
+            <option value="low">低 · 只有较大声音才算</option>
+          </select>
+        </label>
+        <label class="field">
+          无声多久后提醒
+          <select id="silence">
+            <option value="2000">2 秒</option>
+            <option value="3000">3 秒</option>
+            <option value="5000">5 秒</option>
+            <option value="8000">8 秒</option>
+          </select>
+        </label>
+        <div class="meter" aria-hidden="true">
+          <div id="meter-fill" class="meter-fill"></div>
+          <div id="meter-mark" class="meter-mark"></div>
+        </div>
+        <p id="mic-status" class="status">未开启</p>
+        <p id="notify-note" class="hint hidden"></p>
+      </div>
+      <p id="mic-error" class="error hidden"></p>
+    </section>
+
+    <section class="panel list-panel">
+      <h2>正在发声的标签</h2>
+      <ul id="audible-list" class="audible-list"></ul>
+      <p id="audible-empty" class="empty">当前没有正在播放声音的标签页</p>
+    </section>
+
+    <p id="footprint" class="footprint">正在计算占用空间…</p>
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>

@@ -1,0 +1,225 @@
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  width: 340px;
+  max-height: 560px;
+  overflow: auto;
+  font-family: "Segoe UI", system-ui, sans-serif;
+  font-size: 13px;
+  color: #0f172a;
+  background: #f4f7fb;
+}
+
+.header {
+  padding: 14px 16px 12px;
+  background: linear-gradient(135deg, #0c4a6e 0%, #0891b2 100%);
+  color: #f0f9ff;
+}
+
+.header h1 {
+  font-size: 16px;
+  font-weight: 650;
+}
+
+.subtitle {
+  margin-top: 4px;
+  font-size: 12px;
+  opacity: 0.92;
+}
+
+.panel {
+  margin: 10px 12px;
+  padding: 12px;
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  cursor: pointer;
+}
+
+.row strong {
+  display: block;
+  font-size: 13px;
+}
+
+.row small {
+  display: block;
+  margin-top: 2px;
+  color: #64748b;
+  font-size: 11px;
+}
+
+.row input {
+  width: 42px;
+  height: 24px;
+  flex-shrink: 0;
+  accent-color: #0891b2;
+  cursor: pointer;
+}
+
+.stop-input {
+  width: 100%;
+  margin-top: 10px;
+  padding: 8px 10px;
+  border: 1px solid #fecaca;
+  border-radius: 8px;
+  background: #fff1f2;
+  color: #9f1239;
+  font: inherit;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.stop-input:hover:not(:disabled) {
+  background: #ffe4e6;
+}
+
+.stop-input:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.hint,
+.empty,
+.status {
+  margin-top: 8px;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.options {
+  margin-top: 10px;
+  display: grid;
+  gap: 8px;
+}
+
+.options.is-off {
+  opacity: 0.55;
+}
+
+.field {
+  display: grid;
+  gap: 4px;
+  color: #334155;
+  font-size: 12px;
+}
+
+.field select {
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  background: #fff;
+  color: #0f172a;
+  font: inherit;
+}
+
+.meter {
+  position: relative;
+  height: 8px;
+  border-radius: 999px;
+  background: #e2e8f0;
+  overflow: hidden;
+}
+
+.meter-fill {
+  height: 100%;
+  width: 0;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #67e8f9, #0891b2);
+}
+
+.meter.is-alert .meter-fill {
+  background: linear-gradient(90deg, #fb7185, #dc2626);
+}
+
+.meter-mark {
+  position: absolute;
+  top: -2px;
+  bottom: -2px;
+  width: 2px;
+  background: #0f172a;
+}
+
+.status.is-ok {
+  color: #047857;
+}
+
+.status.is-alert {
+  color: #b91c1c;
+  font-weight: 650;
+}
+
+.error {
+  margin-top: 8px;
+  color: #b91c1c;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.hidden {
+  display: none;
+}
+
+.list-panel h2 {
+  font-size: 12px;
+  font-weight: 650;
+  color: #334155;
+}
+
+.audible-list {
+  list-style: none;
+  margin-top: 8px;
+  display: grid;
+  gap: 6px;
+}
+
+.audible-list button {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #f8fafc;
+  color: #0f172a;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+}
+
+.audible-list button:hover {
+  border-color: #67e8f9;
+  background: #ecfeff;
+}
+
+.audible-list .title {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.audible-list .meta {
+  display: block;
+  margin-top: 2px;
+  color: #64748b;
+  font-size: 11px;
+}
+
+.footprint {
+  padding: 0 16px 14px;
+  color: #64748b;
+  font-size: 11px;
+  line-height: 1.45;
+  text-align: center;
+}
