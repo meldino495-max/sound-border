@@ -73,8 +73,12 @@ function stop() {
   audioContext = null;
 }
 
-chrome.runtime.onMessage.addListener((message) => {
-  if (message?.type === "offscreen-stop") stop();
+chrome.runtime.onMessage.addListener((message, sender) => {
+  if (message?.type !== "offscreen-stop") return;
+  if (sender?.id !== chrome.runtime.id || sender.tab) return;
+  const url = String(sender.url || "");
+  if (url && !url.startsWith(`chrome-extension://${chrome.runtime.id}/`)) return;
+  stop();
 });
 
 start();

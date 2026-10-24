@@ -2,10 +2,10 @@
   "manifest_version": 3,
   "name": "声浪边框",
   "short_name": "声浪边框",
-  "version": "1.0.0",
+  "version": "1.0.25",
   "description": "标签页一出声，页面四边就出现流动光边；可选监听麦克风，没有输入时边框变红抖动并通知。",
   "minimum_chrome_version": "116",
-  "permissions": ["tabs", "tabGroups", "windows", "storage", "notifications", "offscreen", "scripting", "alarms", "debugger"],
+  "permissions": ["tabs", "windows", "storage", "notifications", "offscreen", "scripting", "alarms", "debugger"],
   "host_permissions": ["http://*/*", "https://*/*"],
   "background": {
     "service_worker": "background.js",

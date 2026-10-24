@@ -21,7 +21,25 @@
         <input id="output-toggle" type="checkbox" role="switch" />
       </label>
       <p class="hint">
-        打开后记住这个网站。下次再打开它，出声时光边会自动出现，声音停止后消失。
+        打开后记住这个网站。Facebook 和 WhatsApp 要各自打开一次。
+      </p>
+      <label class="field">
+        边框显示
+        <select id="output-scope">
+          <option value="sync">整个浏览器一起显示</option>
+          <option value="tab">每个标签页单独显示</option>
+        </select>
+        <span class="hint">一起显示：这个网站有一个标签页出声，同一浏览器里该网站打开的窗口都会亮。单独显示：只有正在出声的那个标签页亮边，其他标签页互不影响。</span>
+      </label>
+      <label class="row">
+        <span>
+          <strong>噪音提醒</strong>
+          <small>输出有声音时通知</small>
+        </span>
+        <input id="noise-toggle" type="checkbox" role="switch" />
+      </label>
+      <p class="hint">
+        打开后，只要已记住输出识别的网站正在出声，就弹出通知，并写上你在浏览器里自定义的用户名。一起显示时，这个网站开着的每个窗口都会写进去；单独显示时，只写正在出声的标签页。麦克风没有声音时，通知里也会写上这个用户名。点击通知会回到那个窗口。声音还在的话，大约每 30 秒再提醒一次。
       </p>
     </section>
 
@@ -34,7 +52,7 @@
         <input id="input-toggle" type="checkbox" role="switch" />
       </label>
       <p class="hint">
-        打开后记住这个网站。下次再打开它会自动监听麦克风。没有输入时，普通网页和本地插件页面都会一直红边抖动，并弹出浏览器通知。
+        打开后记住这个网站。同一个浏览器里，WhatsApp、Facebook 和其他网站可以同时打开输入识别，共用这一路麦克风。下次再打开它会自动监听。没有输入时，只有已打开输入识别的网站会红边抖动，并弹出通知。
       </p>
       <button id="stop-input" class="stop-input" type="button">停止本次输入识别</button>
       <p class="hint">只取消现在的红边和监听，不会忘掉这个网站。下次再打开它，输入识别会自动打开。</p>
@@ -56,6 +74,7 @@
             <option value="5000">5 秒</option>
             <option value="8000">8 秒</option>
           </select>
+          <span class="hint">到这个时间就出现红边和通知。开始识别之后再改，会从改的这一刻重新计时。一直无声的话，也按这个时间再提醒。</span>
         </label>
         <div class="meter" aria-hidden="true">
           <div id="meter-fill" class="meter-fill"></div>
@@ -65,6 +84,50 @@
         <p id="notify-note" class="hint hidden"></p>
       </div>
       <p id="mic-error" class="error hidden"></p>
+    </section>
+
+    <section class="panel">
+      <h2>边框外观</h2>
+      <label class="field edge-size">
+        边框粗细 <span id="edge-size-label">8 px</span>
+        <input id="edge-size" type="range" min="2" max="32" step="1" value="8" />
+      </label>
+      <label class="field edge-size">
+        流动速度 <span id="flow-speed-label">1 倍</span>
+        <input id="flow-speed" type="range" min="1" max="8" step="1" value="1" />
+      </label>
+      <label class="row shake-row">
+        <span>
+          <strong>输出抖动</strong>
+          <small>出声时光边跟着晃</small>
+        </span>
+        <input id="output-shake" type="checkbox" role="switch" />
+      </label>
+      <label class="field edge-size" id="shake-level-field">
+        抖动程度 <span id="shake-level-label">3 · 中等</span>
+        <input id="shake-level" type="range" min="1" max="5" step="1" value="3" />
+      </label>
+      <div class="look-row">
+        <span>输出光边</span>
+        <div id="live-output" class="color-live"></div>
+        <label class="rainbow"><input id="rainbow-output" type="checkbox" /> 彩色</label>
+        <input id="color-output" type="color" value="#0096c7" aria-label="输出光边颜色" />
+      </div>
+      <div class="look-row">
+        <span>输入提醒</span>
+        <div id="live-input" class="color-live"></div>
+        <label class="rainbow"><input id="rainbow-input" type="checkbox" /> 彩色</label>
+        <input id="color-input" type="color" value="#d00000" aria-label="输入提醒颜色" />
+      </div>
+      <p class="hint preset-label">推荐风格</p>
+      <div class="presets" id="look-presets">
+        <button type="button" data-preset="minimal">简约<span class="swatches"><i class="dot sky"></i><i class="dot rose"></i></span></button>
+        <button type="button" data-preset="neon">夜霓<span class="swatches"><i class="dot cyan"></i><i class="dot magenta"></i></span></button>
+        <button type="button" data-preset="forest">森林<span class="swatches"><i class="dot mint"></i><i class="dot amber"></i></span></button>
+        <button type="button" data-preset="dusk">暮色<span class="swatches"><i class="dot sunset"></i><i class="dot lilac"></i></span></button>
+      </div>
+      <button id="reset-look" class="reset-look" type="button">恢复默认外观</button>
+      <p class="hint">拖动时上面的光条会马上变。已经显示的页面边框也会跟着变，不会盖住网页。点一个推荐风格会同时换上输出和输入的颜色。彩色按红、橙、黄、绿、蓝、紫流动。点开取色器会回到纯色。粗细从 2 到 32。流动速度 1 倍是原来的速度，最高 8 倍，输出光边和输入红边用同一个速度。输出抖动默认关闭。打开后，只有正在出声的输出光边会晃：1 大约 4 像素，5 大约 20 像素。输入没声音时的红边抖动不由这个开关控制。</p>
     </section>
 
     <section class="panel list-panel">

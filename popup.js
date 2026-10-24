@@ -1,6 +1,8 @@
-import { DEFAULTS, siteHost } from "./silence-monitor.js";
+import { DEFAULT_BORDER_COLORS, DEFAULTS, normalizeBorderColors, normalizeEdgePx, normalizeFlowSpeed, normalizeOutputShakeLevel, outputShakePixels, siteHost } from "./silence-monitor.js";
 
 const outputToggle = document.querySelector("#output-toggle");
+const noiseToggle = document.querySelector("#noise-toggle");
+const outputScope = document.querySelector("#output-scope");
 const inputToggle = document.querySelector("#input-toggle");
 const sensitivity = document.querySelector("#sensitivity");
 const silence = document.querySelector("#silence");
@@ -16,6 +18,31 @@ const audibleEmpty = document.querySelector("#audible-empty");
 const footprint = document.querySelector("#footprint");
 const siteName = document.querySelector("#site-name");
 const stopInput = document.querySelector("#stop-input");
+const LOOK_PRESETS = [
+  { id: "minimal", name: "简约", output: "#38bdf8", input: "#fb7185" },
+  { id: "neon", name: "夜霓", output: "#22d3ee", input: "#e879f9" },
+  { id: "forest", name: "森林", output: "#34d399", input: "#f59e0b" },
+  { id: "dusk", name: "暮色", output: "#fb923c", input: "#c084fc" },
+];
+const edgeSize = document.querySelector("#edge-size");
+const edgeSizeLabel = document.querySelector("#edge-size-label");
+const flowSpeed = document.querySelector("#flow-speed");
+const flowSpeedLabel = document.querySelector("#flow-speed-label");
+const outputShake = document.querySelector("#output-shake");
+const shakeLevel = document.querySelector("#shake-level");
+const shakeLevelLabel = document.querySelector("#shake-level-label");
+const shakeLevelField = document.querySelector("#shake-level-field");
+const SHAKE_WORDS = ["", "很轻", "轻", "中等", "重", "很重"];
+const liveOutput = document.querySelector("#live-output");
+const liveInput = document.querySelector("#live-input");
+const rainbowOutput = document.querySelector("#rainbow-output");
+const rainbowInput = document.querySelector("#rainbow-input");
+const colorOutput = document.querySelector("#color-output");
+const colorInput = document.querySelector("#color-input");
+const resetLook = document.querySelector("#reset-look");
+
+let lookTimer = null;
+let lookDirty = false;
 
 let currentHost = "";
 let currentUrl = "";
@@ -53,6 +80,14 @@ outputToggle.addEventListener("change", () => {
   saveSite({ output: outputToggle.checked });
 });
 
+noiseToggle.addEventListener("change", () => {
+  chrome.storage.local.set({ noiseAlert: noiseToggle.checked });
+});
+
+outputScope.addEventListener("change", () => {
+  chrome.storage.local.set({ outputScope: outputScope.value === "tab" ? "tab" : "sync" });
+});
+
 inputToggle.addEventListener("change", async () => {
   clearError();
   if (!currentHost) {
@@ -62,6 +97,13 @@ inputToggle.addEventListener("change", async () => {
   if (!inputToggle.checked) {
     await chrome.storage.session.remove("micErrorName");
     await saveSite({ input: false });
+    syncInputOptions();
+    refreshMic();
+    return;
+  }
+  if ((await micPermissionState()) === "granted") {
+    await chrome.storage.session.remove("micErrorName");
+    await saveSite({ input: true });
     syncInputOptions();
     refreshMic();
     return;
@@ -107,12 +149,23 @@ chrome.tabs.onActivated.addListener(() => {
 });
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area === "local" && changes.siteFlags) refreshSite();
+  if (area !== "local" || lookDirty) return;
+  if (!changes.borderColors && !changes.edgePx && !changes.flowSpeed && !changes.outputShake && !changes.outputShakeLevel) return;
+  chrome.storage.local.get({
+    borderColors: DEFAULT_BORDER_COLORS,
+    edgePx: DEFAULTS.edgePx,
+    flowSpeed: DEFAULTS.flowSpeed,
+    outputShake: DEFAULTS.outputShake,
+    outputShakeLevel: DEFAULTS.outputShakeLevel,
+  }).then(applyStoredLook);
 });
 
 async function init() {
   const stored = await chrome.storage.local.get(DEFAULTS);
   sensitivity.value = ["high", "medium", "low"].includes(stored.sensitivity) ? stored.sensitivity : "medium";
   silence.value = String([2000, 3000, 5000, 8000].includes(Number(stored.silenceMs)) ? stored.silenceMs : 3000);
+  noiseToggle.checked = stored.noiseAlert === true;
+  outputScope.value = stored.outputScope === "tab" ? "tab" : "sync";
   await refreshSite();
   await refreshTabs();
   await refreshNotifyNote();
@@ -122,6 +175,7 @@ async function init() {
   const session = await chrome.storage.session.get({ micErrorName: "" });
   if (!inputToggle.checked && session.micErrorName) showError(micErrorText({ name: session.micErrorName }));
   await refreshMic();
+  applyStoredLook(stored);
   pollTimer = setInterval(() => {
     refreshMic();
   }, 800);
@@ -131,8 +185,8 @@ async function init() {
 function syncInputOptions() {
   const on = inputToggle.checked;
   inputOptions.classList.toggle("is-off", !on);
-  sensitivity.disabled = !on;
-  silence.disabled = !on;
+  sensitivity.disabled = false;
+  silence.disabled = false;
   outputToggle.disabled = !currentHost;
   inputToggle.disabled = !currentHost;
 }
@@ -147,7 +201,7 @@ async function refreshSite() {
   outputToggle.checked = flags?.output === true;
   inputToggle.checked = flags?.input === true;
   if (url.startsWith("chrome-extension://")) {
-    siteName.textContent = "当前是本地插件页面。麦克风没有输入时，这个页面也会一直红边抖动。";
+    siteName.textContent = "当前是本地插件页面。这里不能打开输入识别，也不会出现输入红边。";
   } else if (!currentHost) {
     siteName.textContent = "当前页面不能按网站记住。请打开普通网页后再开关。";
   } else {
@@ -171,6 +225,15 @@ async function saveSite(patch) {
   if (!next.output && !next.input) delete siteFlags[currentHost];
   else siteFlags[currentHost] = next;
   await chrome.storage.local.set({ siteFlags });
+}
+
+async function micPermissionState() {
+  try {
+    const result = await navigator.permissions.query({ name: "microphone" });
+    return result.state;
+  } catch {
+    return "";
+  }
 }
 
 async function refreshMic() {
@@ -281,7 +344,7 @@ async function refreshNotifyNote() {
     notifyNote.classList.add("hidden");
     return;
   }
-  notifyNote.textContent = "系统通知当前是关闭的。无输入时边框仍会变红抖动，但弹不出通知。";
+  notifyNote.textContent = "系统通知当前是关闭的。边框仍会变化，但噪音和没输入都弹不出通知。";
   notifyNote.classList.remove("hidden");
 }
 
@@ -321,4 +384,185 @@ function formatBytes(bytes) {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+}
+
+edgeSize.addEventListener("input", () => {
+  showEdgeSize(edgeSize.value);
+  queueLook();
+});
+edgeSize.addEventListener("change", () => commitLook());
+flowSpeed.addEventListener("input", () => {
+  showFlowSpeed(flowSpeed.value);
+  queueLook();
+});
+flowSpeed.addEventListener("change", () => commitLook());
+outputShake.addEventListener("change", () => commitLook());
+shakeLevel.addEventListener("input", () => {
+  showShakeLevel(shakeLevel.value);
+  queueLook();
+});
+shakeLevel.addEventListener("change", () => commitLook());
+colorOutput.addEventListener("input", () => {
+  rainbowOutput.checked = false;
+  queueLook();
+});
+colorInput.addEventListener("input", () => {
+  rainbowInput.checked = false;
+  queueLook();
+});
+colorOutput.addEventListener("change", () => {
+  rainbowOutput.checked = false;
+  commitLook();
+});
+colorInput.addEventListener("change", () => {
+  rainbowInput.checked = false;
+  commitLook();
+});
+rainbowOutput.addEventListener("change", () => commitLook());
+rainbowInput.addEventListener("change", () => commitLook());
+document.querySelectorAll("[data-preset]").forEach((button) => {
+  button.addEventListener("click", () => {
+    const preset = LOOK_PRESETS.find((item) => item.id === button.dataset.preset);
+    if (!preset) return;
+    applyPreset(preset);
+  });
+});
+resetLook.addEventListener("click", () => {
+  applyStoredLook({
+    borderColors: DEFAULT_BORDER_COLORS,
+    edgePx: DEFAULTS.edgePx,
+    flowSpeed: DEFAULTS.flowSpeed,
+    outputShake: DEFAULTS.outputShake,
+    outputShakeLevel: DEFAULTS.outputShakeLevel,
+  });
+  commitLook();
+});
+window.addEventListener("pagehide", () => {
+  if (lookDirty) flushLook();
+});
+
+function showEdgeSize(value) {
+  const px = normalizeEdgePx(value);
+  if (document.activeElement !== edgeSize) edgeSize.value = String(px);
+  edgeSizeLabel.textContent = `${px} px`;
+}
+
+function showFlowSpeed(value) {
+  const speed = normalizeFlowSpeed(value);
+  if (document.activeElement !== flowSpeed) flowSpeed.value = String(speed);
+  flowSpeedLabel.textContent = `${speed} 倍`;
+}
+
+function showShakeLevel(value) {
+  const level = normalizeOutputShakeLevel(value);
+  if (document.activeElement !== shakeLevel) shakeLevel.value = String(level);
+  shakeLevelLabel.textContent = `${level} · ${SHAKE_WORDS[level]}`;
+}
+
+function formColors() {
+  return normalizeBorderColors({
+    output: rainbowOutput.checked ? "rainbow" : colorOutput.value,
+    outputHex: colorOutput.value,
+    input: rainbowInput.checked ? "rainbow" : colorInput.value,
+    inputHex: colorInput.value,
+  });
+}
+
+function paintBar(bar, palette, px, speed) {
+  const light = palette.stops[2] || palette.stops[0];
+  bar.style.height = `${px}px`;
+  bar.style.setProperty("--flow-speed", String(speed));
+  bar.style.backgroundImage = `linear-gradient(90deg, ${palette.stops.join(",")})`;
+  bar.style.boxShadow = palette.rainbow
+    ? `0 0 8px ${palette.stops[0]}, 0 0 14px ${light}`
+    : `0 0 10px ${light}`;
+}
+
+function paintLive() {
+  const colors = formColors();
+  const px = normalizeEdgePx(edgeSize.value);
+  const speed = normalizeFlowSpeed(flowSpeed.value);
+  const reach = outputShakePixels(shakeLevel.value);
+  paintBar(liveOutput, colors.outputPalette, px, speed);
+  paintBar(liveInput, colors.inputPalette, px, speed);
+  liveOutput.style.setProperty("--shake-x", `${reach.x}px`);
+  liveOutput.style.setProperty("--shake-y", `${reach.y}px`);
+  liveOutput.classList.toggle("is-shaking", outputShake.checked);
+  shakeLevelField.classList.toggle("is-off", !outputShake.checked);
+  markPreset(colors);
+}
+
+function applyPreset(preset) {
+  const outputRainbow = preset.output === "rainbow";
+  const inputRainbow = preset.input === "rainbow";
+  rainbowOutput.checked = outputRainbow;
+  rainbowInput.checked = inputRainbow;
+  colorOutput.value = outputRainbow ? preset.outputHex : preset.output;
+  colorInput.value = inputRainbow ? preset.inputHex : preset.input;
+  commitLook();
+}
+
+function markPreset(colors) {
+  document.querySelectorAll("[data-preset]").forEach((button) => {
+    const preset = LOOK_PRESETS.find((item) => item.id === button.dataset.preset);
+    if (!preset) return;
+    const outputMatches = preset.output === "rainbow"
+      ? colors.output === "rainbow"
+      : colors.output !== "rainbow" && colors.outputHex === preset.output;
+    const inputMatches = preset.input === "rainbow"
+      ? colors.input === "rainbow"
+      : colors.input !== "rainbow" && colors.inputHex === preset.input;
+    button.classList.toggle("is-on", outputMatches && inputMatches);
+  });
+}
+
+function applyStoredLook(stored) {
+  const colors = normalizeBorderColors(stored.borderColors);
+  showEdgeSize(stored.edgePx);
+  showFlowSpeed(stored.flowSpeed);
+  outputShake.checked = stored.outputShake === true;
+  showShakeLevel(stored.outputShakeLevel);
+  if (document.activeElement !== colorOutput) colorOutput.value = colors.outputHex;
+  if (document.activeElement !== colorInput) colorInput.value = colors.inputHex;
+  rainbowOutput.checked = colors.output === "rainbow";
+  rainbowInput.checked = colors.input === "rainbow";
+  paintLive();
+}
+
+function queueLook() {
+  paintLive();
+  lookDirty = true;
+  if (lookTimer) return;
+  lookTimer = setTimeout(() => {
+    lookTimer = null;
+    flushLook();
+  }, 70);
+}
+
+function commitLook() {
+  paintLive();
+  if (lookTimer) {
+    clearTimeout(lookTimer);
+    lookTimer = null;
+  }
+  lookDirty = true;
+  flushLook();
+}
+
+function flushLook() {
+  if (!lookDirty) return;
+  lookDirty = false;
+  const colors = formColors();
+  chrome.storage.local.set({
+    borderColors: {
+      output: colors.output,
+      outputHex: colors.outputHex,
+      input: colors.input,
+      inputHex: colors.inputHex,
+    },
+    edgePx: normalizeEdgePx(edgeSize.value),
+    flowSpeed: normalizeFlowSpeed(flowSpeed.value),
+    outputShake: outputShake.checked,
+    outputShakeLevel: normalizeOutputShakeLevel(shakeLevel.value),
+  });
 }

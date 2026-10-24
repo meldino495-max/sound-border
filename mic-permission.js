@@ -39,14 +39,19 @@ async function micState() {
 async function grant() {
   allowButton.disabled = true;
   status.textContent = "正在请求麦克风…";
-  const stream = await navigator.mediaDevices.getUserMedia({
-    audio: {
-      echoCancellation: false,
-      noiseSuppression: false,
-      autoGainControl: false,
-    },
-  });
-  for (const track of stream.getTracks()) track.stop();
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        echoCancellation: false,
+        noiseSuppression: false,
+        autoGainControl: false,
+      },
+    });
+    for (const track of stream.getTracks()) track.stop();
+  } catch (error) {
+    const state = await micState();
+    if (!(state === "granted" && error?.name === "NotReadableError")) throw error;
+  }
   const { pendingInputHost } = await chrome.storage.session.get({ pendingInputHost: "" });
   await chrome.storage.session.remove(["micErrorName", "pendingInputHost"]);
   if (pendingInputHost) {

@@ -1,16 +1,41 @@
 import {
+  DEFAULT_EDGE_PX,
   DEFAULTS,
-  NOTIFY_EVERY_MS,
   createSilenceMonitor,
+  browserUserLabel,
+  noiseNoticeText,
+  isOffscreenDocument,
+  isOtherExtensionPage,
+  isOwnContentScript,
+  isOwnExtensionPage,
+  normalizeBorderColors,
+  normalizeEdgePx,
+  normalizeFlowSpeed,
+  normalizeOutputShakeLevel,
+  normalizeOutputScope,
+  outputShakePixels,
+  normalizeHexColor,
+  parseProfileName,
   shouldResumePausedHost,
+  shouldShowOutputBorder,
+  silenceNoticeText,
   siteHost,
   thresholdFor,
 } from "./silence-monitor.js";
 
 const NOTIFY_ID = "tab-sound-glow-silence";
+const NOISE_NOTIFY_ID = "tab-sound-glow-noise";
 const MIC_ALARM = "tab-sound-glow-mic";
+const NOISE_ALARM = "tab-sound-glow-noise-alarm";
+const NOISE_REPEAT_MS = 30000;
 
-let settings = { ...DEFAULTS, siteFlags: {} };
+let settings = {
+  ...DEFAULTS,
+  siteFlags: {},
+  edgePx: DEFAULT_EDGE_PX,
+  borderColors: normalizeBorderColors(DEFAULTS.borderColors),
+};
+let extensionLook = "";
 let inputWatching = false;
 let inputPausedHosts = new Set();
 const tabHost = new Map();
@@ -40,8 +65,16 @@ function boot() {
 
 const ready = boot();
 
+chrome.notifications.onClicked.addListener((notificationId) => {
+  if (notificationId === NOTIFY_ID) focusSilenceWindow().catch(() => {});
+  if (notificationId === NOISE_NOTIFY_ID) focusNoiseWindow().catch(() => {});
+});
+
 chrome.runtime.onInstalled.addListener(() => {
-  ready
+  chrome.storage.session
+    .set({ forceRereadBrowserUser: true })
+    .catch(() => {})
+    .then(() => ready)
     .then(injectOpenTabs)
     .then(syncAll)
     .catch((error) => console.error(error));
@@ -49,14 +82,41 @@ chrome.runtime.onInstalled.addListener(() => {
 
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== "local") return;
-  if (!("siteFlags" in changes || "sensitivity" in changes || "silenceMs" in changes)) {
-    return;
+  if ("silenceMs" in changes) settings.silenceMs = normalizeSilence(changes.silenceMs.newValue);
+  if ("sensitivity" in changes) {
+    const next = changes.sensitivity.newValue;
+    if (next === "high" || next === "medium" || next === "low") settings.sensitivity = next;
   }
+  if ("silenceMs" in changes || "sensitivity" in changes) ensureMonitor();
+  const heavy = "siteFlags" in changes || "sensitivity" in changes || "silenceMs" in changes;
+  const look = "borderColors" in changes || "edgePx" in changes || "flowSpeed" in changes || "outputShake" in changes || "outputShakeLevel" in changes;
+  const noise = "noiseAlert" in changes;
+  const scope = "outputScope" in changes;
+  if (scope) settings.outputScope = normalizeOutputScope(changes.outputScope.newValue);
+  if (!heavy && !look && !noise && !scope) return;
   enqueue(async () => {
-    if (changes.siteFlags) {
-      await reconcilePause(changes.siteFlags.oldValue, changes.siteFlags.newValue);
+    if (heavy) {
+      if (changes.siteFlags) {
+        await reconcilePause(changes.siteFlags.oldValue, changes.siteFlags.newValue);
+      }
+      await doBoot();
+      return;
     }
-    await doBoot();
+    if (noise) settings.noiseAlert = changes.noiseAlert.newValue === true;
+    const stored = await chrome.storage.local.get({
+      borderColors: DEFAULTS.borderColors,
+      edgePx: DEFAULT_EDGE_PX,
+      flowSpeed: DEFAULTS.flowSpeed,
+      outputShake: DEFAULTS.outputShake,
+      outputShakeLevel: DEFAULTS.outputShakeLevel,
+    });
+    settings.borderColors = normalizeBorderColors(stored.borderColors);
+    settings.edgePx = normalizeEdgePx(stored.edgePx);
+    settings.flowSpeed = normalizeFlowSpeed(stored.flowSpeed);
+    settings.outputShake = stored.outputShake === true;
+    settings.outputShakeLevel = normalizeOutputShakeLevel(stored.outputShakeLevel);
+    if ("outputShake" in changes) await injectOpenTabs();
+    await syncAll();
   }).catch((error) => console.error(error));
 });
 
@@ -96,24 +156,33 @@ chrome.tabs.onActivated.addListener(({ windowId }) => {
 chrome.tabs.onRemoved.addListener((tabId, info) => {
   freshTabs.delete(tabId);
   tabHost.delete(tabId);
-  scheduleSync(info.windowId);
+  scheduleSync();
 });
 
-const syncTimers = new Map();
+chrome.windows.onFocusChanged.addListener(() => {
+  scheduleSync();
+});
 
-function scheduleSync(windowId) {
-  const pending = syncTimers.get(windowId);
-  if (pending) clearTimeout(pending);
-  syncTimers.set(
-    windowId,
-    setTimeout(() => {
-      syncTimers.delete(windowId);
-      syncWindow(windowId).catch(() => {});
-    }, 400)
-  );
+let syncTimer = null;
+
+function scheduleSync() {
+  if (syncTimer) clearTimeout(syncTimer);
+  syncTimer = setTimeout(() => {
+    syncTimer = null;
+    syncAll().catch((error) => console.error(error));
+  }, 200);
 }
 
 chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === NOISE_ALARM) {
+    ready
+      .then(async () => {
+        const tabs = await chrome.tabs.query({});
+        await syncNoiseNotice(tabs, true);
+      })
+      .catch(() => {});
+    return;
+  }
   if (alarm.name !== MIC_ALARM) return;
   ready
     .then(async () => {
@@ -125,16 +194,31 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 
 chrome.runtime.onConnect.addListener((port) => {
   if (port.name !== "mic") return;
+  if (!isOffscreenDocument(port.sender, chrome.runtime.id)) {
+    port.disconnect();
+    return;
+  }
   port.onMessage.addListener((message) => {
     if (message?.type === "mic-level") ready.then(() => handleLevel(message)).catch(() => {});
     if (message?.type === "mic-error") ready.then(() => handleMicError(message)).catch(() => {});
   });
 });
 
+chrome.runtime.onMessageExternal.addListener((message, sender, sendResponse) => {
+  if (message?.type !== "pause-input") return;
+  if (!isOtherExtensionPage(sender, chrome.runtime.id)) return;
+  enqueue(() => pauseInputNow())
+    .then(() => sendResponse({ ok: true }))
+    .catch(() => sendResponse({ ok: false, error: "停不了这次输入识别。" }));
+  return true;
+});
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message || typeof message !== "object") return;
+  const extensionId = chrome.runtime.id;
 
   if (message.type === "open-mic-permission") {
+    if (!isOwnExtensionPage(sender, extensionId)) return;
     openMicWindow(message.auto === true)
       .then(() => sendResponse({ ok: true }))
       .catch((error) => sendResponse({ ok: false, error: error.message || String(error) }));
@@ -142,6 +226,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.type === "pause-input") {
+    if (!isOwnExtensionPage(sender, extensionId) && !isOwnContentScript(sender, extensionId)) return;
     enqueue(() => pauseInputNow())
       .then(() => sendResponse({ ok: true }))
       .catch((error) => sendResponse({ ok: false, error: error.message || String(error) }));
@@ -149,7 +234,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.type === "query-state") {
-    const tabId = sender.tab?.id;
+    if (!isOwnContentScript(sender, extensionId)) return;
+    const tabId = sender.tab.id;
     ready
       .then(() => stateForTab(tabId))
       .then((state) => sendResponse(state))
@@ -158,6 +244,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.type === "get-status") {
+    if (!isOwnExtensionPage(sender, extensionId)) return;
     ready
       .then(async () => {
         const listening = inputWatching && (await hasOffscreen()) && !micError;
@@ -190,6 +277,13 @@ async function doBoot() {
     inputEnabled: stored.inputEnabled === true,
     sensitivity: stored.sensitivity || DEFAULTS.sensitivity,
     silenceMs: normalizeSilence(stored.silenceMs),
+    noiseAlert: stored.noiseAlert === true,
+    edgePx: normalizeEdgePx(stored.edgePx),
+    flowSpeed: normalizeFlowSpeed(stored.flowSpeed),
+    outputShake: stored.outputShake === true,
+    outputShakeLevel: normalizeOutputShakeLevel(stored.outputShakeLevel),
+    outputScope: normalizeOutputScope(stored.outputScope),
+    borderColors: normalizeBorderColors(stored.borderColors),
     siteFlags: stored.siteFlags && typeof stored.siteFlags === "object" ? stored.siteFlags : {},
   };
   micError = session.micErrorName || "";
@@ -203,7 +297,6 @@ function ensureMonitor() {
   const options = {
     threshold: thresholdFor(settings.sensitivity),
     silenceMs: settings.silenceMs,
-    notifyEveryMs: NOTIFY_EVERY_MS,
     onAlertStart: () => {
       inputAlert = true;
       notifySilence();
@@ -276,13 +369,269 @@ async function openMicWindow(auto) {
 }
 
 function notifySilence() {
-  chrome.notifications.create(NOTIFY_ID, {
-    type: "basic",
-    iconUrl: "icons/icon128.png",
-    title: "麦克风没有声音",
-    message: "没有检测到输入声音。请检查麦克风是否静音、是否选对，或确认自己有没有在说话。",
-    priority: 2,
-  }).catch(() => {});
+  rememberSilenceTarget()
+    .then(async (target) => {
+      const tab = target?.tabId ? await chrome.tabs.get(target.tabId).catch(() => null) : null;
+      const [part] = tab ? await labelForTabs([tab]) : [];
+      return { message: silenceNoticeText(part), user: part?.user || "" };
+    })
+    .catch(() => ({ message: silenceNoticeText(null), user: "" }))
+    .then(({ message, user }) => {
+      chrome.notifications
+        .create(NOTIFY_ID, {
+          type: "basic",
+          iconUrl: "icons/icon128.png",
+          title: user ? `麦克风没有声音 · ${user}` : "麦克风没有声音",
+          message,
+          priority: 2,
+        })
+        .catch(() => {});
+    });
+}
+
+let noiseSignature = "";
+let lastNoiseAt = 0;
+let noiseAlarmOn = false;
+
+async function syncNoiseNotice(tabs, fromAlarm = false) {
+  if (!settings.noiseAlert) {
+    noiseSignature = "";
+    lastNoiseAt = 0;
+    if (noiseAlarmOn) {
+      noiseAlarmOn = false;
+      chrome.alarms.clear(NOISE_ALARM).catch(() => {});
+    }
+    await chrome.notifications.clear(NOISE_NOTIFY_ID).catch(() => {});
+    await chrome.storage.session.remove("noiseFocus").catch(() => {});
+    return;
+  }
+  const sources = outputNoticeTabs(tabs, audibleOutputHosts(tabs));
+  if (!sources.length) {
+    noiseSignature = "";
+    lastNoiseAt = 0;
+    if (noiseAlarmOn) {
+      noiseAlarmOn = false;
+      chrome.alarms.clear(NOISE_ALARM).catch(() => {});
+    }
+    await chrome.notifications.clear(NOISE_NOTIFY_ID).catch(() => {});
+    await chrome.storage.session.remove("noiseFocus").catch(() => {});
+    return;
+  }
+  if (!noiseAlarmOn) {
+    noiseAlarmOn = true;
+    chrome.alarms.create(NOISE_ALARM, { periodInMinutes: 0.5 });
+  }
+  const signature = sources
+    .map((tab) => `${tab.windowId}:${tab.id}`)
+    .sort()
+    .join("|");
+  const changed = signature !== noiseSignature;
+  const due = fromAlarm || Date.now() - lastNoiseAt >= NOISE_REPEAT_MS;
+  if (!changed && !due) return;
+  noiseSignature = signature;
+  lastNoiseAt = Date.now();
+  const labels = await labelForTabs(sources);
+  const message = noiseNoticeText(labels);
+  if (!message) return;
+  const primary = labels[0];
+  await chrome.storage.session.set({
+    noiseFocus: { windowId: primary.windowId, tabId: primary.tabId },
+  });
+  await chrome.notifications.clear(NOISE_NOTIFY_ID).catch(() => {});
+  await chrome.notifications
+    .create(NOISE_NOTIFY_ID, {
+      type: "basic",
+      iconUrl: "icons/icon128.png",
+      title: primary.user ? `检测到输出声音 · ${primary.user}` : "检测到输出声音",
+      message,
+      priority: 2,
+    })
+    .catch(() => {});
+}
+
+async function focusNoiseWindow() {
+  const stored = await chrome.storage.session.get({ noiseFocus: null });
+  let target = stored.noiseFocus;
+  let win = target?.windowId ? await chrome.windows.get(target.windowId).catch(() => null) : null;
+  if (!win) {
+    const tabs = await chrome.tabs.query({ audible: true });
+    const [next] = await labelForTabs(tabs.filter((tab) => siteFlag(tab.url, "output")));
+    target = next;
+    win = target?.windowId ? await chrome.windows.get(target.windowId).catch(() => null) : null;
+  }
+  if (!win || !target?.windowId) return;
+  const patch = { focused: true };
+  if (win.state === "minimized") patch.state = "normal";
+  await chrome.windows.update(win.id, patch);
+  if (target.tabId) await chrome.tabs.update(target.tabId, { active: true }).catch(() => {});
+  await chrome.windows.update(win.id, { focused: true });
+}
+
+async function labelForTabs(tabs) {
+  const user = await currentBrowserUser();
+  const windows = await chrome.windows.getAll({ windowTypes: ["normal"] });
+  const ordered = windows
+    .map((win) => win.id)
+    .filter((id) => id != null)
+    .sort((a, b) => a - b);
+  return tabs
+    .filter((tab) => tab?.id != null)
+    .map((tab) => {
+      const index = ordered.indexOf(tab.windowId);
+      const which = browserUserLabel(user, index >= 0 ? index + 1 : 0, ordered.length);
+      const title = cleanTitle(tab.title).slice(0, 42) || "未命名页面";
+      const host = siteHost(tab.url);
+      const page = host && !title.includes(host) ? `${title}（${host}）` : title;
+      return {
+        which,
+        page,
+        user,
+        windowId: tab.windowId,
+        tabId: tab.id,
+        lastAccessed: tab.lastAccessed || 0,
+      };
+    })
+    .sort((a, b) => b.lastAccessed - a.lastAccessed);
+}
+
+function cleanTitle(title) {
+  return (title || "").replace(/^(?:\u200b[🔊🔈] )+/, "").trim();
+}
+
+let browserUserName = "";
+let browserUserTask = null;
+let browserUserResolved = false;
+
+async function currentBrowserUser() {
+  if (browserUserResolved) return browserUserName;
+  if (!browserUserTask) browserUserTask = loadBrowserUserName();
+  return Promise.race([
+    browserUserTask,
+    new Promise((resolve) => setTimeout(() => resolve(browserUserName), 1500)),
+  ]);
+}
+
+async function loadBrowserUserName() {
+  try {
+    const version = chrome.runtime.getManifest().version;
+    const [session, stored] = await Promise.all([
+      chrome.storage.session.get({ forceRereadBrowserUser: false }),
+      chrome.storage.local.get({ browserUserName: "", browserUserNameVersion: "" }),
+    ]);
+    const cached = String(stored.browserUserName || "").trim();
+    if (!session.forceRereadBrowserUser && cached && stored.browserUserNameVersion === version) {
+      browserUserName = cached;
+      browserUserResolved = true;
+      return browserUserName;
+    }
+    await chrome.storage.session.remove("forceRereadBrowserUser").catch(() => {});
+    const name = (await readProfileName()) || cached;
+    if (name) {
+      browserUserName = name;
+      await chrome.storage.local.set({ browserUserName: name, browserUserNameVersion: version });
+    }
+    browserUserResolved = true;
+    return browserUserName;
+  } finally {
+    browserUserTask = null;
+  }
+}
+
+async function readProfileName() {
+  const text = await readInternalPage("chrome://prefs-internals/profile.name");
+  return parseProfileName(text);
+}
+
+function readInternalPage(url) {
+  if (url !== "chrome://prefs-internals/profile.name") return Promise.resolve("");
+  return new Promise((resolve) => {
+    let windowId = 0;
+    let tabId = 0;
+    let attached = false;
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(value || "");
+      if (attached && tabId) chrome.debugger.detach({ tabId }).catch(() => {});
+      if (windowId) chrome.windows.remove(windowId).catch(() => {});
+    };
+    const timer = setTimeout(() => finish(""), 6000);
+    chrome.windows
+      .create({ url, type: "popup", state: "minimized", focused: false, width: 240, height: 120 })
+      .then(async (win) => {
+        windowId = win?.id || 0;
+        tabId = win?.tabs?.[0]?.id || 0;
+        if (!tabId && windowId) {
+          const tabs = await chrome.tabs.query({ windowId });
+          tabId = tabs[0]?.id || 0;
+        }
+        if (!tabId) {
+          finish("");
+          return;
+        }
+        await waitForTab(tabId);
+        await chrome.debugger.attach({ tabId }, "1.3");
+        attached = true;
+        const result = await chrome.debugger.sendCommand({ tabId }, "Runtime.evaluate", {
+          expression: "(document.body && document.body.innerText) || ''",
+          returnByValue: true,
+        });
+        finish(result?.result?.value || "");
+      })
+      .catch(() => finish(""));
+  });
+}
+
+function waitForTab(tabId) {
+  return new Promise((resolve) => {
+    const done = () => {
+      clearTimeout(timer);
+      chrome.tabs.onUpdated.removeListener(onUpdated);
+      resolve();
+    };
+    const timer = setTimeout(done, 4000);
+    const onUpdated = (id, info) => {
+      if (id === tabId && info.status === "complete") done();
+    };
+    chrome.tabs.onUpdated.addListener(onUpdated);
+    chrome.tabs.get(tabId).then((tab) => {
+      if (tab.status === "complete") done();
+    }).catch(() => {});
+  });
+}
+
+async function rememberSilenceTarget() {
+  const tabs = await chrome.tabs.query({});
+  const wanted = tabs.filter((tab) => tab.id && tabWantsInput(tab));
+  const chosen = wanted.reduce((best, tab) => {
+    if (!best || (tab.lastAccessed || 0) >= (best.lastAccessed || 0)) return tab;
+    return best;
+  }, null);
+  if (!chosen) {
+    await chrome.storage.session.remove("silenceFocus");
+    return null;
+  }
+  const target = { windowId: chosen.windowId, tabId: chosen.id };
+  await chrome.storage.session.set({ silenceFocus: target });
+  return target;
+}
+
+async function focusSilenceWindow() {
+  const stored = await chrome.storage.session.get({ silenceFocus: null });
+  let target = stored.silenceFocus;
+  let win = target?.windowId ? await chrome.windows.get(target.windowId).catch(() => null) : null;
+  if (!win) {
+    target = await rememberSilenceTarget();
+    win = target?.windowId ? await chrome.windows.get(target.windowId).catch(() => null) : null;
+  }
+  if (!win || !target?.windowId) return;
+  const patch = { focused: true };
+  if (win.state === "minimized") patch.state = "normal";
+  await chrome.windows.update(win.id, patch);
+  if (target.tabId) await chrome.tabs.update(target.tabId, { active: true }).catch(() => {});
+  await chrome.windows.update(win.id, { focused: true });
 }
 
 async function injectOpenTabs() {
@@ -347,26 +696,21 @@ async function pauseInputNow() {
 async function syncAll() {
   const tabs = await chrome.tabs.query({});
   await refreshInputWatch(tabs);
+  const hosts = audibleOutputHosts(tabs);
   const groups = groupByWindow(tabs);
   for (const group of groups.values()) {
-    deliverGroup(group, group.some((tab) => tab.audible));
+    deliverGroup(group, group.some((tab) => tab.audible), hosts);
   }
   await updateBadge(tabs);
-  await syncExtensionBorders(inputWatching && inputAlert);
-}
-
-async function syncWindow(windowId) {
-  const windowTabs = await chrome.tabs.query({ windowId });
-  const all = await chrome.tabs.query({});
-  await refreshInputWatch(all);
-  deliverGroup(windowTabs, windowTabs.some((tab) => tab.audible));
-  await updateBadge(all);
-  await syncExtensionBorders(inputWatching && inputAlert);
+  await syncNoiseNotice(tabs);
+  await syncExtensionBorders(false);
 }
 
 async function syncExtensionBorders(show) {
-  if (show === extensionBorderOn) return;
+  const look = inputLookKey();
+  if (show === extensionBorderOn && (!show || look === extensionLook)) return;
   extensionBorderOn = show;
+  extensionLook = look;
   const tabs = await chrome.tabs.query({});
   let error = "";
   if (show) {
@@ -413,7 +757,11 @@ async function paintExtensionBorderNow(tabId, show) {
       if (!message.includes("Already attached")) throw error;
     }
     const script = await loadBorderScript();
-    const expression = `globalThis.__TSG_ALERT__=${show ? "true" : "false"};\n${script}`;
+    const palette = settings.borderColors?.inputPalette || normalizeBorderColors(null).inputPalette;
+    const stops = Array.isArray(palette.stops)
+      ? palette.stops.map((stop) => normalizeHexColor(stop)).filter(Boolean)
+      : [];
+    const expression = `globalThis.__TSG_ALERT__=${show ? "true" : "false"};globalThis.__TSG_EXT_ID__=${JSON.stringify(chrome.runtime.id)};globalThis.__TSG_EDGE_PX__=${normalizeEdgePx(settings.edgePx)};globalThis.__TSG_INPUT_PALETTE__=${JSON.stringify({ rainbow: palette.rainbow === true, stops })};\n${script}`;
     try {
       await chrome.debugger.sendCommand(target, "Runtime.evaluate", {
         expression,
@@ -451,10 +799,34 @@ async function releaseOldSoundGroups() {
   await chrome.storage.session.remove(["coloredTabIds", "soundGroupByWindow"]);
 }
 
-function deliverGroup(tabs, windowHasAudible) {
+function deliverGroup(tabs, windowHasAudible, audibleHosts) {
   for (const tab of tabs) {
-    sendTab(tab.id, visualState(tab, windowHasAudible));
+    sendTab(tab.id, visualState(tab, windowHasAudible, audibleHosts));
   }
+}
+
+function audibleOutputHosts(tabs) {
+  const hosts = new Set();
+  for (const tab of tabs) {
+    if (!tab?.audible) continue;
+    const host = siteHost(tab.url);
+    if (host && siteFlag(tab.url, "output")) hosts.add(host);
+  }
+  return hosts;
+}
+
+function outputNoticeTabs(tabs, hosts) {
+  if (normalizeOutputScope(settings.outputScope) === "tab") {
+    return tabs.filter((tab) => tab?.audible && tab.id != null && siteFlag(tab.url, "output"));
+  }
+  const chosen = new Map();
+  for (const tab of tabs) {
+    const host = siteHost(tab.url);
+    if (!host || !hosts.has(host) || !siteFlag(tab.url, "output") || tab.id == null) continue;
+    const prev = chosen.get(tab.windowId);
+    if (!prev || (tab.audible && !prev.audible)) chosen.set(tab.windowId, tab);
+  }
+  return [...chosen.values()];
 }
 
 function siteFlag(url, key) {
@@ -463,24 +835,55 @@ function siteFlag(url, key) {
   return settings.siteFlags[host]?.[key] === true;
 }
 
-function visualState(tab, windowHasAudible) {
-  const outputOn = siteFlag(tab.url, "output");
-  const output = outputOn && (!!tab.audible || (!!tab.active && windowHasAudible));
+function visualState(tab, windowHasAudible, audibleHosts) {
+  const host = siteHost(tab.url);
+  const output = shouldShowOutputBorder({
+    enabled: siteFlag(tab.url, "output"),
+    audible: tab.audible === true,
+    hostAudible: !!(host && audibleHosts?.has(host)),
+    windowAudible: windowHasAudible === true,
+    active: tab.active === true,
+    scope: settings.outputScope,
+  });
   return {
     type: "state",
     output,
     flash: false,
-    inputAlert: inputWatching && inputAlert,
+    inputAlert: inputWatching && inputAlert && tabWantsInput(tab),
+    ...lookPayload(),
   };
+}
+
+function lookPayload() {
+  const colors = settings.borderColors || normalizeBorderColors(null);
+  return {
+    edgePx: normalizeEdgePx(settings.edgePx),
+    flowSpeed: normalizeFlowSpeed(settings.flowSpeed),
+    outputShake: settings.outputShake === true,
+    outputShakeX: outputShakePixels(settings.outputShakeLevel).x,
+    outputShakeY: outputShakePixels(settings.outputShakeLevel).y,
+    colors: {
+      output: { rainbow: colors.outputPalette.rainbow === true, stops: colors.outputPalette.stops },
+      input: { rainbow: colors.inputPalette.rainbow === true, stops: colors.inputPalette.stops },
+    },
+  };
+}
+
+function inputLookKey() {
+  const look = lookPayload();
+  const input = look.colors.input;
+  return `${look.edgePx}:${input.rainbow ? "rainbow" : input.stops.join(",")}`;
 }
 
 async function stateForTab(tabId) {
   if (!tabId) return { output: false, flash: false, inputAlert: false };
   const tab = await chrome.tabs.get(tabId).catch(() => null);
   if (!tab) return { output: false, flash: false, inputAlert: false };
-  const siblings = await chrome.tabs.query({ windowId: tab.windowId, audible: true });
-  const state = visualState(tab, siblings.length > 0);
-  return { output: state.output, flash: state.flash, inputAlert: state.inputAlert };
+  const tabs = await chrome.tabs.query({});
+  const hosts = audibleOutputHosts(tabs);
+  const windowHasAudible = tabs.some((item) => item.windowId === tab.windowId && item.audible);
+  const state = visualState(tab, windowHasAudible, hosts);
+  return state;
 }
 
 function tabWantsInput(tab) {
